@@ -214,4 +214,101 @@ class EncodeDecodeTest < Test::Unit::TestCase
     assert_match msg.to_json, msg_out.to_json
   end
 
+  def test_encode_from_hash_simple
+    hash = { optional_int32: 42, optional_string: "hello" }
+    bytes = A::B::C::TestMessage.encode_from_hash(hash)
+    decoded = A::B::C::TestMessage.decode(bytes)
+    assert_equal 42, decoded.optional_int32
+    assert_equal "hello", decoded.optional_string
+  end
+
+  def test_encode_from_hash_matches_traditional
+    hash = { optional_int32: 42, optional_string: "hello", optional_bool: true }
+    fast = A::B::C::TestMessage.encode_from_hash(hash)
+    trad = A::B::C::TestMessage.encode(A::B::C::TestMessage.new(**hash))
+    assert_equal trad, fast
+  end
+
+  def test_encode_from_hash_nested_message
+    # optional_msg is self-referencing (TestMessage type)
+    hash = { optional_int32: 1, optional_msg: { optional_string: "nested" } }
+    fast = A::B::C::TestMessage.encode_from_hash(hash)
+    trad = A::B::C::TestMessage.encode(
+      A::B::C::TestMessage.new(
+        optional_int32: 1,
+        optional_msg: A::B::C::TestMessage.new(optional_string: "nested")
+      )
+    )
+    assert_equal trad, fast
+  end
+
+  def test_encode_from_hash_repeated_fields
+    hash = { repeated_int32: [1, 2, 3], repeated_string: ["a", "b"] }
+    fast = A::B::C::TestMessage.encode_from_hash(hash)
+    trad = A::B::C::TestMessage.encode(A::B::C::TestMessage.new(**hash))
+    assert_equal trad, fast
+  end
+
+  def test_encode_from_hash_repeated_messages
+    hash = { repeated_msg: [{ optional_int32: 1 }, { optional_int32: 2 }] }
+    fast = A::B::C::TestMessage.encode_from_hash(hash)
+    trad = A::B::C::TestMessage.encode(
+      A::B::C::TestMessage.new(
+        repeated_msg: [
+          A::B::C::TestMessage.new(optional_int32: 1),
+          A::B::C::TestMessage.new(optional_int32: 2)
+        ]
+      )
+    )
+    assert_equal trad, fast
+  end
+
+  def test_encode_from_hash_empty
+    fast = A::B::C::TestMessage.encode_from_hash({})
+    trad = A::B::C::TestMessage.encode(A::B::C::TestMessage.new)
+    assert_equal trad, fast
+  end
+
+  def test_encode_from_hash_all_scalar_types
+    hash = {
+      optional_int32: -1,
+      optional_int64: -9999999999,
+      optional_uint32: 42,
+      optional_uint64: 18446744073709551615,
+      optional_bool: true,
+      optional_float: 3.14,
+      optional_double: 2.71828,
+      optional_string: "test",
+      optional_bytes: "\x00\x01\x02".b,
+      optional_enum: :A,
+    }
+    fast = A::B::C::TestMessage.encode_from_hash(hash)
+    trad = A::B::C::TestMessage.encode(A::B::C::TestMessage.new(**hash))
+    assert_equal trad, fast
+  end
+
+  def test_encode_from_hash_string_keys
+    hash = { "optional_int32" => 42, "optional_string" => "hello" }
+    fast = A::B::C::TestMessage.encode_from_hash(hash)
+    decoded = A::B::C::TestMessage.decode(fast)
+    assert_equal 42, decoded.optional_int32
+    assert_equal "hello", decoded.optional_string
+  end
+
+  def test_encode_from_hash_rejects_non_hash
+    assert_raise(ArgumentError) { A::B::C::TestMessage.encode_from_hash("not a hash") }
+    assert_raise(ArgumentError) { A::B::C::TestMessage.encode_from_hash(42) }
+  end
+
+  def test_encode_from_hash_unknown_field
+    assert_raise(ArgumentError) { A::B::C::TestMessage.encode_from_hash({ nonexistent: 1 }) }
+  end
+
+  def test_encode_from_hash_with_recursion_limit
+    hash = { optional_int32: 42 }
+    fast = A::B::C::TestMessage.encode_from_hash(hash, { recursion_limit: 10 })
+    decoded = A::B::C::TestMessage.decode(fast)
+    assert_equal 42, decoded.optional_int32
+  end
+
 end

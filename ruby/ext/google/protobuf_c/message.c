@@ -1124,6 +1124,97 @@ static VALUE Message_encode(int argc, VALUE* argv, VALUE klass) {
 }
 
 /*
+ * ruby-doc: AbstractMessage.encode_from_hash
+ *
+ * Encodes a message directly from a Ruby Hash to binary protobuf format,
+ * without creating intermediate Ruby Message objects.
+ *
+ * This is significantly faster than Message.encode(Message.new(hash)) for
+ * encode-only workloads because it avoids creating Ruby wrapper objects
+ * (Arena, Message, kwargs Hash) for every sub-message. All work happens
+ * in C using a single upb_Arena.
+ *
+ * Hash keys can be strings or symbols matching the proto field names.
+ * Sub-messages can be represented as nested Hashes. Repeated fields should
+ * be Arrays. Map fields should be Hashes.
+ *
+ * @example
+ *   bytes = MyMessage.encode_from_hash({
+ *     name: "hello",
+ *     value: 42,
+ *     nested: { foo: "bar" },
+ *     tags: ["a", "b", "c"]
+ *   })
+ *
+ * @param hash [Hash] field values keyed by field name (String or Symbol)
+ * @param options [Hash]
+ * @option recursion_limit [Integer] set to maximum encoding depth for message
+ * (default is 64)
+ * @return [String] binary protobuf encoding
+ */
+static VALUE Message_encode_from_hash(int argc, VALUE* argv, VALUE klass) {
+  int options = 0;
+  char* data;
+  size_t size;
+
+  if (argc < 1 || argc > 2) {
+    rb_raise(rb_eArgError, "Expected 1 or 2 arguments.");
+  }
+
+  VALUE hash_arg = argv[0];
+  if (TYPE(hash_arg) != T_HASH) {
+    rb_raise(rb_eArgError,
+             "Expected Hash as first argument (given %s).",
+             rb_class2name(CLASS_OF(hash_arg)));
+  }
+
+  if (argc == 2) {
+    VALUE encode_opts = argv[1];
+    if (TYPE(encode_opts) != T_HASH) {
+      rb_raise(rb_eArgError, "Expected hash for options argument.");
+    }
+    VALUE depth =
+        rb_hash_lookup(encode_opts, ID2SYM(rb_intern("recursion_limit")));
+
+    if (depth != Qnil && TYPE(depth) == T_FIXNUM) {
+      options |= upb_DecodeOptions_MaxDepth(FIX2INT(depth));
+    }
+  }
+
+  // Get the message descriptor from the class.
+  VALUE descriptor = rb_ivar_get(klass, descriptor_instancevar_interned);
+  const upb_MessageDef* msgdef = Descriptor_GetMsgDef(descriptor);
+  const upb_MiniTable* t = upb_MessageDef_MiniTable(msgdef);
+
+  // Create a single arena for the entire message tree — no Ruby wrappers.
+  upb_Arena* arena = upb_Arena_New();
+  upb_Message* msg = upb_Message_New(t, arena);
+
+  // Recursively populate the upb_Message from the Ruby Hash.
+  // This reuses the existing Message_InitFromValue which handles:
+  // - String/Symbol keys → field lookup
+  // - Nested Hash → sub-message
+  // - Array → repeated field
+  // - Hash → map field
+  // - Scalar conversion via Convert_RubyToUpb
+  Message_InitFromValue(msg, msgdef, hash_arg, arena);
+
+  // Encode to binary.
+  upb_EncodeStatus status =
+      upb_Encode(msg, t, options, arena, &data, &size);
+
+  if (status == kUpb_EncodeStatus_Ok) {
+    VALUE ret = rb_str_new(data, size);
+    rb_enc_associate(ret, rb_ascii8bit_encoding());
+    upb_Arena_Free(arena);
+    return ret;
+  } else {
+    upb_Arena_Free(arena);
+    rb_raise(rb_eRuntimeError, "Exceeded maximum depth (possibly cycle)");
+  }
+}
+
+/*
  * ruby-doc: AbstractMessage.encode_json
  *
  * Encodes the given message object into its serialized JSON representation.
@@ -1443,6 +1534,7 @@ static void Message_define_class(VALUE klass) {
   rb_define_method(klass, "[]=", Message_index_set, 2);
   rb_define_singleton_method(klass, "decode", Message_decode, -1);
   rb_define_singleton_method(klass, "encode", Message_encode, -1);
+  rb_define_singleton_method(klass, "encode_from_hash", Message_encode_from_hash, -1);
   rb_define_singleton_method(klass, "decode_json", Message_decode_json, -1);
   rb_define_singleton_method(klass, "encode_json", Message_encode_json, -1);
   rb_define_singleton_method(klass, "descriptor", Message_descriptor, 0);
